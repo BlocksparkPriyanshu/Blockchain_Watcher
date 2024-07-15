@@ -30,27 +30,35 @@ def connect_to_db():
 db = connect_to_db()
 cursor = db.cursor()
 
+def latest_block_db():
+    query= "SELECT MAX(block_number) FROM blockchain_db.receive_blockchain_watcher"
+    cursor.execute(query)
+    result = cursor.fetchone()
+    latest_block = result[0] if result[0] is not None else 0
+    print(f"Latest block in database: {latest_block}")
+    return latest_block
+
 def monitor_blocks():
-    new_block_filter = web3.eth.filter('latest')
+    latest_block=latest_block_db()
     print("Monitoring new blocks...")
     try:
         while True:
             print("Checking for new blocks...")
-            # Fetch new entries from the filter
-            new_entries = new_block_filter.get_new_entries()
-            print(f"New entries: {new_entries}")
+            current_block=web3.eth.block_number
 
-            for block_hash in new_entries:
+            for block_number in range(latest_block + 1, current_block + 1):
+
                 try:
                     # Fetch the block with full transactions
-                    block = web3.eth.get_block(block_hash, full_transactions=True)
-                    print(f"Block fetched: {block_hash.hex()}")
+                    block = web3.eth.get_block(block_number, full_transactions=True)
+                    print(f"Block fetched: {block_number}")
                     if block and 'transactions' in block:
                         for tx in block['transactions']:
                             print(f"Processing transaction {tx['hash'].hex()}")
                             store_transaction(tx)
+                    latest_block = block_number
                 except Exception as e:
-                    print(f"Error fetching block {block_hash.hex()}: {e}")
+                    print(f"Error fetching block {block_number}: {e}")
 
             # Sleep for a bit before polling for new blocks again
             time.sleep(10)
@@ -73,15 +81,19 @@ def store_transaction(tx):
         value = Web3.from_wei(tx['value'], 'ether')
         gas_price = Web3.from_wei(tx['gasPrice'], 'gwei')
 
-        sql = "INSERT INTO blockchain_db.receive_blockchain_watcher (from_address, to_address, transaction_hash, block_number, value, gas_price) VALUES (%s, %s, %s, %s, %s,%s)"
+        sql = """
+        INSERT INTO receive_blockchain_watcher (from_address, to_address, transaction_hash, block_number, value, gas_price)
+        VALUES (%s, %s, %s, %s, %s, %s)
+        ON DUPLICATE KEY UPDATE from_address=VALUES(from_address), to_address=VALUES(to_address), value=VALUES(value), gas_price=VALUES(gas_price)
+        """
         cursor.execute(sql, (from_address, to_address, transaction_hash, block_number, value, gas_price))
         db.commit()
         print(f"Stored transaction {transaction_hash}")
     except mysql.connector.Error as err:
         print(f"MySQL Error: {err}")
-        if err.errno == 2055:  # Cursor not connected
-            db = connect_to_db()
-            cursor = db.cursor()
+       
+        db = connect_to_db()
+        cursor = db.cursor()
     except Exception as e:
         print(f"Error storing transaction: {e}")
 
